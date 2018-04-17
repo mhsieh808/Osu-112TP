@@ -5,45 +5,35 @@ from tkinter import *
 import numpy
 import pygame
 import os
-import wave
 import aubio
 import random
-import librosa
+from collections import deque
+import time
+import math
 
 import sys
 from aubio import source, onset
 
-def getOnsets(filename):
-    win_s = 1024               # fft size
-    hop_s = win_s // 2          # hop size
 
-    filename=filename
+#adapted from the aubio demo code
+def getOnsets(data, filename):
+    win_s = 1024 # fft size
+    hop_s = win_s // 2           # hop size
     samplerate=0
-
-    if len(sys.argv) < 2:
-        print("Usage: %s <'Mike-Perry-The-Ocean-ft-Shy-Martin.wav'> [0]" % sys.argv[0])
-        #sys.exit(1)
     sys.argv.append(filename)
     sys.argv.append(samplerate)
-
-
     if len( sys.argv ) > 2: samplerate = int(sys.argv[2])
-
     s = source(filename, samplerate, hop_s)
     samplerate = s.samplerate
-
     o = onset("default", win_s, hop_s, samplerate)
-
     # list of onsets, in samples
     onsets = []
-
     # total number of frames read
     total_frames = 0
     while True:
         samples, read = s()
         if o(samples):
-            #print("%f" % o.get_last_s())
-            onsets.append(o.get_last())
+            onsets.append(o.get_last_s())
         total_frames += read
         if read < hop_s: break
     return onsets
@@ -53,10 +43,19 @@ def init(data):
     data.mode="splashScreen"
     data.file="triangles-download (3).png"
     data.background=PhotoImage(file=data.file)
-    data.songName="Mike-Perry-The-Ocean-ft-Shy-Martin.wav"
-    data.onsets=getOnsets(data.songName)
-    data.beatCircles=BeatCircles(data)
-    data.timerCalls=0
+    data.difficulty=1
+    data.timePassed=0
+    data.radius=50
+    data.beatCircles=[]
+    data.songName="Jon-Bellion-All-Time-Low-BOXINLION-Remix.wav"
+    data.onsets=getOnsets(data, data.songName)
+    data.beatQueue=deque()
+    data.x=100
+    data.y=100
+    data.score=0
+    data.beatList=[]
+    data.nextBeat=data.onsets.pop(0)
+    data.beats=BeatCircles(data, data.x, data.y, data.radius)
     data.backgroundSong="WHITE-ALBUM-off-Vocals.wav"
     playSong(data.backgroundSong)
 
@@ -81,7 +80,7 @@ def timerFired(data):
     elif (data.mode=="songSelection"): songSelectionTimerFired(data)
     elif (data.mode=="help"): helpTimerFired(data)
     elif (data.mode=="settings"): settingsTimerFired(data)
-    elif (data.mode == "playGame"):   playGameTimerFired(data)
+    elif (data.mode == "playGame"):   playSelectedSongLoop(data)
     elif (data.mode=="gameOver"):   gameOverTimerFired(data)
 
 def redrawAll(canvas, data):
@@ -175,46 +174,95 @@ def helpRedrawAll(canvas, data):
 
 def helpTimerFired(data): pass
 
-def songSelectionRedrawAll(canvas, data): pass
+def songSelectionRedrawAll(canvas, data):
+    canvas.create_text(data.width/2, data.radius, text="Song Menu", font=("Century Gothic"\
+        ,int(30)), fill="gray40")
+    canvas.create_text(data.width/2, data.height/2, text="Press Space to start",\
+        font=("Century Gothic", int(30)), fill="gray40") 
 
-def songSelectionKeyPressed(event, data): pass
+def songSelectionKeyPressed(event, data):
+    if event.keysym=="space":
+        pygame.mixer.music.stop()
+        playSong(data.songName)
+        data.mode="playGame"
 
 def songSelectionMousePressed(event, data): pass
 
 def songSelectionTimerFired(data): pass
 
 def playGameRedrawAll(canvas, data):
-    data.beatCircles.draw(canvas)
+    data.beats.draw(canvas)
+    canvas.create_text(data.width-2*data.radius, data.radius, text="Score: "+str(data.score),
+        font=("Century Gothic", int(30)), fill="gray40" )
 
-def playGameTimerFired(data): pass
-    #pass
-    #playSong()
-    #data.timerCalls+=1
-    #print(data.timerCalls)
-    #print(timeit.timeit())
+def almostEqual(d1, d2, epsilon=10**-2):
+    # note: use math.isclose() outside 15-112 with Python version 3.5 or later
+    return (abs(d2 - d1) < epsilon)
 
+def playGameTimerFired(data, clock, sec):
+    print(clock, data.nextBeat)
+    #if almostEqual(clock, data.nextBeat):
+    if clock+1>=data.nextBeat:
+        if len(data.onsets)>0:
+            getBeat(data)
+            data.nextBeat=data.onsets.pop(0)
 
+def playGameMousePressed(event, data):
+    for beat in data.beatList[::-1]:
+        if beat[0]-data.radius<event.x<beat[0]+data.radius and\
+        beat[1]-data.radius<event.y<beat[1]+data.radius:
+            data.beatList.remove(beat)
+            data.score+=1
+
+def playGameKeyPressed(event, data):
+    if event.keysym=="space":
+        data.beats.songTiming()
+
+def getBeat(data):
+    newWidth=data.width-data.radius
+    newHeight=data.height-data.radius
+    x=random.randint(data.radius, newWidth)
+    y=random.randint(data.radius, newHeight)
+    if (x, y) not in data.beatList:
+        data.beatList.append((x,y))
+        data.beats=BeatCircles(data, x, y, data.radius)
+
+def playSelectedSongLoop(data):
+    sec=data.clock.tick_busy_loop(60)/1000
+    pygame.mixer.music.unpause()
+    data.timePassed+=sec
+    playGameTimerFired(data, data.timePassed, sec)
 
 
 
 class BeatCircles(object):
-    def __init__(self, data):
-        #self.width=data.width
-        #self.height=data.height
-        #self.x=random.randint(0, self.width)
-        #self.y=random.randint(0, self.height)
-        self.x=100
-        self.y=100
-        self.radius=100
+    def __init__(self, data, x, y, radius):
+        self.x=x
+        self.y=y
+        self.radius=radius
+        self.border=4
+        self.clock=0.1
         self.onsets=data.onsets
+        self.songName=data.songName
+        self.killTime=0.2
+        self.timePassed=data.timePassed
+        self.killClock=None
+        self.color=(255, 0, 0)
+        self.beatList=data.beatList
+
+    def songTiming(self):
+        start=time.time()
+        pygame.mixer.music.load(self.songName)
+        end=time.time()
+        loadTime=abs(end-start)
+        self.timePassed-=loadTime
+
 
     def draw(self, canvas):
-        #print(pygame.mixer.music.get_pos()/1000)
-        #for i in range(len(self.onsets)):
-        if pygame.mixer.music.get_pos()/1000 in self.onsets:
-             #print("entered")
-             c.create_oval(self.x-self.radius, self.y-self.radius, \
-             self.x+self.radius, self.y+self.radius, fill="blue")
+        color="pink"
+        for i in range(len(self.beatList)):
+            canvas.create_oval(self.beatList[i][0]-self.radius, self.beatList[i][1]-self.radius, self.beatList[i][0]+self.radius,\
+            self.beatList[i][1]+self.radius, fill=color)
 
 
 def playSong(filename):
@@ -251,11 +299,13 @@ def run(width=300, height=300):
     # Set up data and call init
     class Struct(object): pass
     data = Struct()
-    data.timerDelay = 100 # milliseconds
+    data.timerDelay = 1000 # milliseconds
+    data.clock=pygame.time.Clock()
     root = Tk()
     init(data)
     data.width = root.winfo_screenwidth()
     data.height = root.winfo_screenheight()
+    #data.screen = pygame.display.set_mode((data.width, data.height))
     # create the root and the canvas
     canvas = Canvas(root, width=data.width, height=data.height, highlightthickness=0)
     canvas.pack(fill="both", expand=True)
